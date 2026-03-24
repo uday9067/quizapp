@@ -3,10 +3,7 @@ import socket from '../socket'
 import styles from './Host.module.css'
 
 const DEFAULTS = { timerSeconds: 20, topN: 10 }
-<<<<<<< HEAD
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:4000'
-=======
->>>>>>> b8ec5d6ce0da23846e7683f55c6aea937e55727c
 
 export default function Host({ onBack }) {
   const [step, setStep] = useState('setup') // setup | lobby | running | results
@@ -16,11 +13,8 @@ export default function Host({ onBack }) {
   const [players, setPlayers] = useState([])
   const [results, setResults] = useState([])
   const [error, setError] = useState('')
-<<<<<<< HEAD
   const [importMsg, setImportMsg] = useState('')
   const [importing, setImporting] = useState(false)
-=======
->>>>>>> b8ec5d6ce0da23846e7683f55c6aea937e55727c
 
   // Question form state
   const [qText, setQText] = useState('')
@@ -76,7 +70,6 @@ export default function Host({ onBack }) {
     setCorrect(0)
   }
 
-<<<<<<< HEAD
   const importQuestionsFromPdf = async (file) => {
     if (!file) return
 
@@ -106,9 +99,6 @@ export default function Host({ onBack }) {
       setImporting(false)
     }
   }
-
-=======
->>>>>>> b8ec5d6ce0da23846e7683f55c6aea937e55727c
   const removeQuestion = (i) => setQuestions(prev => prev.filter((_, idx) => idx !== i))
 
   const editQuestion = (i) => {
@@ -258,7 +248,6 @@ export default function Host({ onBack }) {
           </div>
 
           <div className="card" style={{ marginTop: 16 }}>
-<<<<<<< HEAD
             <h3 style={{ marginBottom: 8 }}>📄 Bulk Add from PDF</h3>
             <p className={styles.importHint}>
               PDF format: Q1..., A)... B)... C)... D)... Answer: A
@@ -277,10 +266,7 @@ export default function Host({ onBack }) {
             {importing && <p className={styles.importStatus}>Importing PDF...</p>}
             {!importing && importMsg && <p className={styles.importStatus}>{importMsg}</p>}
           </div>
-
           <div className="card" style={{ marginTop: 16 }}>
-=======
->>>>>>> b8ec5d6ce0da23846e7683f55c6aea937e55727c
             <h3 style={{ marginBottom: 16 }}>⚙️ Settings</h3>
             <div className={styles.settingsGrid}>
               <div className={styles.field}>
