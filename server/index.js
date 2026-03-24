@@ -2,16 +2,12 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
-<<<<<<< HEAD
 const multer = require("multer");
 const pdfParse = require("pdf-parse");
-=======
->>>>>>> b8ec5d6ce0da23846e7683f55c6aea937e55727c
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-<<<<<<< HEAD
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -77,8 +73,6 @@ function parseQuestionsFromText(rawText) {
 
   return questions;
 }
-=======
->>>>>>> b8ec5d6ce0da23846e7683f55c6aea937e55727c
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -327,7 +321,6 @@ io.on("connection", (socket) => {
 
 app.get("/", (req, res) => res.send("QuizApp server running"));
 
-<<<<<<< HEAD
 app.post("/api/questions/import-pdf", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
@@ -354,8 +347,5 @@ app.post("/api/questions/import-pdf", upload.single("file"), async (req, res) =>
     return res.status(500).json({ error: "Failed to parse PDF." });
   }
 });
-
-=======
->>>>>>> b8ec5d6ce0da23846e7683f55c6aea937e55727c
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => console.log(`Server on port ${PORT}`));
