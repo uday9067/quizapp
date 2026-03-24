@@ -1,0 +1,352 @@
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const cors = require("cors");
+const multer = require("multer");
+const pdfParse = require("pdf-parse");
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+function parseQuestionsFromText(rawText) {
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const questions = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const questionMatch = lines[i].match(
+      /^(?:Q(?:uestion)?\s*\d*[:.)-]?\s*|(\d+)\.\s+)(.+)$/i
+    );
+
+    if (!questionMatch) {
+      i += 1;
+      continue;
+    }
+
+    const questionText = questionMatch[2].trim();
+    const options = [];
+    let correct = 0;
+    let cursor = i + 1;
+
+    while (cursor < lines.length && options.length < 4) {
+      const optionMatch = lines[cursor].match(/^([A-D])[\).:-]\s+(.+)$/i);
+      if (!optionMatch) break;
+      options.push(optionMatch[2].trim());
+      cursor += 1;
+    }
+
+    if (options.length !== 4) {
+      i += 1;
+      continue;
+    }
+
+    if (cursor < lines.length) {
+      const answerLine = lines[cursor];
+      const answerMatch = answerLine.match(
+        /^(?:Answer|Correct(?:\s*Answer)?)\s*[:=-]\s*([A-D]|[1-4])$/i
+      );
+      if (answerMatch) {
+        const token = answerMatch[1].toUpperCase();
+        correct = /^[1-4]$/.test(token)
+          ? Number(token) - 1
+          : token.charCodeAt(0) - 65;
+        cursor += 1;
+      }
+    }
+
+    questions.push({
+      question: questionText,
+      options,
+      correct: Math.max(0, Math.min(3, correct)),
+    });
+    i = cursor;
+  }
+
+  return questions;
+}
+
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: "*", methods: ["GET", "POST"] },
+});
+
+// rooms: { roomCode: { hostId, questions, settings, players, started, currentQ, timer } }
+const rooms = {};
+
+function generateCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+function getRoomSummary(room) {
+  return {
+    players: Object.values(room.players).map((p) => ({
+      id: p.id,
+      name: p.name,
+      score: p.score,
+      finishedAt: p.finishedAt,
+    })),
+    started: room.started,
+    currentQ: room.currentQ,
+    totalQuestions: room.questions.length,
+    settings: room.settings,
+  };
+}
+
+io.on("connection", (socket) => {
+  // HOST: create room
+  socket.on("create_room", ({ questions, settings }) => {
+    const code = generateCode();
+    rooms[code] = {
+      hostId: socket.id,
+      questions,
+      settings,
+      players: {},
+      started: false,
+      currentQ: 0,
+      timers: {},
+    };
+    socket.join(code);
+    socket.emit("room_created", { code });
+    console.log(`Room ${code} created`);
+  });
+
+  // HOST: update questions/settings before start
+  socket.on("update_room", ({ code, questions, settings }) => {
+    if (!rooms[code] || rooms[code].hostId !== socket.id) return;
+    rooms[code].questions = questions;
+    rooms[code].settings = settings;
+    socket.emit("room_updated");
+  });
+
+  // USER: join room
+  socket.on("join_room", ({ code, name }) => {
+    const room = rooms[code];
+    if (!room) return socket.emit("error", { msg: "Room not found" });
+    if (room.started) return socket.emit("error", { msg: "Quiz already started" });
+
+    room.players[socket.id] = {
+      id: socket.id,
+      name,
+      score: 0,
+      answers: [],
+      currentQ: 0,
+      finishedAt: null,
+    };
+
+    socket.join(code);
+    socket.data.roomCode = code;
+    socket.data.isHost = false;
+
+    socket.emit("joined_room", { code, totalQuestions: room.questions.length });
+    // Notify host
+    io.to(room.hostId).emit("player_joined", getRoomSummary(room));
+    console.log(`${name} joined room ${code}`);
+  });
+
+  // HOST: start quiz
+  socket.on("start_quiz", ({ code }) => {
+    const room = rooms[code];
+    if (!room || room.hostId !== socket.id) return;
+    if (room.questions.length === 0) return socket.emit("error", { msg: "No questions added" });
+
+    room.started = true;
+    room.currentQ = 0;
+
+    // Send first question to all players
+    io.to(code).emit("quiz_started", {
+      totalQuestions: room.questions.length,
+      timerSeconds: room.settings.timerSeconds,
+    });
+
+    sendQuestion(code, 0);
+  });
+
+  function sendQuestion(code, qIndex) {
+    const room = rooms[code];
+    if (!room) return;
+
+    const q = room.questions[qIndex];
+    if (!q) return;
+
+    const questionData = {
+      index: qIndex,
+      total: room.questions.length,
+      question: q.question,
+      options: q.options,
+      timerSeconds: room.settings.timerSeconds,
+    };
+
+    // Send to all players individually (not host)
+    Object.keys(room.players).forEach((pid) => {
+      const player = room.players[pid];
+      if (player.currentQ === qIndex) {
+        io.to(pid).emit("question", questionData);
+      }
+    });
+  }
+
+  // USER: submit answer
+  socket.on("submit_answer", ({ code, qIndex, answer, timeTaken }) => {
+    const room = rooms[code];
+    if (!room || !room.players[socket.id]) return;
+
+    const player = room.players[socket.id];
+    if (player.currentQ !== qIndex) return; // already answered
+
+    const q = room.questions[qIndex];
+    const isCorrect = q.correct === answer;
+    const timeBonus = isCorrect ? Math.max(0, room.settings.timerSeconds - timeTaken) : 0;
+    const points = isCorrect ? 100 + Math.floor(timeBonus * 2) : 0;
+
+    player.score += points;
+    player.answers.push({ qIndex, answer, correct: isCorrect, points });
+    player.currentQ += 1;
+
+    socket.emit("answer_result", { correct: isCorrect, points, totalScore: player.score });
+
+    // Notify host of score update
+    io.to(room.hostId).emit("score_update", getRoomSummary(room));
+
+    // Move player to next question or finish
+    if (player.currentQ < room.questions.length) {
+      const nextQ = room.questions[player.currentQ];
+      socket.emit("question", {
+        index: player.currentQ,
+        total: room.questions.length,
+        question: nextQ.question,
+        options: nextQ.options,
+        timerSeconds: room.settings.timerSeconds,
+      });
+    } else {
+      // Player finished
+      player.finishedAt = Date.now();
+      socket.emit("quiz_complete", {
+        score: player.score,
+        total: room.questions.length * 100,
+      });
+      io.to(room.hostId).emit("score_update", getRoomSummary(room));
+      checkAllDone(code);
+    }
+  });
+
+  // USER: timer expired - auto submit null
+  socket.on("time_up", ({ code, qIndex }) => {
+    const room = rooms[code];
+    if (!room || !room.players[socket.id]) return;
+    const player = room.players[socket.id];
+    if (player.currentQ !== qIndex) return;
+
+    player.answers.push({ qIndex, answer: null, correct: false, points: 0 });
+    player.currentQ += 1;
+
+    socket.emit("answer_result", { correct: false, points: 0, totalScore: player.score });
+    io.to(room.hostId).emit("score_update", getRoomSummary(room));
+
+    if (player.currentQ < room.questions.length) {
+      const nextQ = room.questions[player.currentQ];
+      socket.emit("question", {
+        index: player.currentQ,
+        total: room.questions.length,
+        question: nextQ.question,
+        options: nextQ.options,
+        timerSeconds: room.settings.timerSeconds,
+      });
+    } else {
+      player.finishedAt = Date.now();
+      socket.emit("quiz_complete", { score: player.score });
+      io.to(room.hostId).emit("score_update", getRoomSummary(room));
+      checkAllDone(code);
+    }
+  });
+
+  function checkAllDone(code) {
+    const room = rooms[code];
+    if (!room) return;
+    const allDone = Object.values(room.players).every((p) => p.finishedAt !== null);
+    if (allDone) {
+      const results = getResults(room);
+      io.to(code).emit("final_results", { results });
+    }
+  }
+
+  function getResults(room) {
+    const topN = room.settings.topN || 10;
+    return Object.values(room.players)
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return (a.finishedAt || Infinity) - (b.finishedAt || Infinity);
+      })
+      .slice(0, topN)
+      .map((p, i) => ({ rank: i + 1, name: p.name, score: p.score }));
+  }
+
+  // HOST: get results manually
+  socket.on("get_results", ({ code }) => {
+    const room = rooms[code];
+    if (!room || room.hostId !== socket.id) return;
+    const results = getResults(room);
+    socket.emit("final_results", { results });
+  });
+
+  // HOST: end quiz early
+  socket.on("end_quiz", ({ code }) => {
+    const room = rooms[code];
+    if (!room || room.hostId !== socket.id) return;
+    const results = getResults(room);
+    io.to(code).emit("final_results", { results });
+  });
+
+  socket.on("disconnect", () => {
+    // If host disconnects, notify players
+    for (const [code, room] of Object.entries(rooms)) {
+      if (room.hostId === socket.id) {
+        io.to(code).emit("error", { msg: "Host disconnected" });
+        delete rooms[code];
+      } else if (room.players[socket.id]) {
+        delete room.players[socket.id];
+        io.to(room.hostId).emit("score_update", getRoomSummary(room));
+      }
+    }
+  });
+});
+
+app.get("/", (req, res) => res.send("QuizApp server running"));
+
+app.post("/api/questions/import-pdf", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "Please upload a PDF file." });
+    }
+
+    if (req.file.mimetype !== "application/pdf") {
+      return res.status(400).json({ error: "Only PDF files are supported." });
+    }
+
+    const parsed = await pdfParse(req.file.buffer);
+    const questions = parseQuestionsFromText(parsed.text || "");
+
+    if (questions.length === 0) {
+      return res.status(400).json({
+        error:
+          "Could not detect questions. Use format: Q1..., A)... B)... C)... D)... Answer: A",
+      });
+    }
+
+    return res.json({ questions, count: questions.length });
+  } catch (error) {
+    console.error("PDF import failed:", error);
+    return res.status(500).json({ error: "Failed to parse PDF." });
+  }
+});
+
+const PORT = process.env.PORT || 4000;
+server.listen(PORT, () => console.log(`Server on port ${PORT}`));
