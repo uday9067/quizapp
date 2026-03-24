@@ -63,6 +63,7 @@
   margin-top: 6px;
 }
 
+<<<<<<< HEAD
 .importHint {
   color: var(--muted);
   font-size: 12px;
@@ -83,6 +84,8 @@
   color: var(--green);
 }
 
+=======
+>>>>>>> b8ec5d6ce0da23846e7683f55c6aea937e55727c
 .status {
   display: flex;
   align-items: center;
